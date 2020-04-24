@@ -206,7 +206,7 @@ func (o *GoHandler) RedisMatch(conn redis.Conn, keyPattern string) []string {
 		}
 
 		if len(ret) != 2 {
-			o.Err = fmt.Errorf("unexpected redis scan return %v", ret)
+			o.Set(fmt.Errorf("unexpected redis scan return %v", ret))
 			return results
 		}
 		
