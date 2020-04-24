@@ -4,11 +4,23 @@ import (
 	"fmt"
 	"time"
 	"github.com/gomodule/redigo/redis"
-	"github.com/hawkwithwind/errorhandler"
+	"github.com/hawkwithwind/gohandler"
 )
 
-type ErrorHandler struct {
-	errorhandler.ErrorHandler
+type GoHandler struct {
+	gohandler.GoHandler
+}
+
+func (o *GoHandler) Error() bool {
+	return o.GoHandler.Error()
+}
+
+func (o *GoHandler) Init(errp *error) {
+	o.GoHandler.Init(errp)
+}
+
+func (o *GoHandler) Set(err error) {
+	o.GoHandler.Set(err)
 }
 
 type RedisConfig struct {
@@ -54,50 +66,53 @@ func NewRedisPool(server string, db string, password string) *redis.Pool {
 	}
 }
 
-func (o *ErrorHandler) RedisDo(conn redis.Conn, timeout time.Duration,
+func (o *GoHandler) RedisDo(conn redis.Conn, timeout time.Duration,
 	cmd string, args ...interface{}) interface{} {
-	if o.Err != nil {
+	if o.Error() {
 		return nil
 	}
 
-	var ret interface{}
-	ret, o.Err = redis.DoWithTimeout(conn, _timeout, cmd, args...)
-
+	ret, err := redis.DoWithTimeout(conn, _timeout, cmd, args...)
+	
+	o.Set(err)
 	return ret
 }
 
-func (o *ErrorHandler) RedisSend(conn redis.Conn, cmd string, args ...interface{}) {
-	if o.Err != nil {
+func (o *GoHandler) RedisSend(conn redis.Conn, cmd string, args ...interface{}) {
+	if o.Error() {
 		return
 	}
 
-	o.Err = conn.Send(cmd, args...)
+	o.Set(conn.Send(cmd, args...))
 }
 
-func (o *ErrorHandler) RedisValue(reply interface{}) []interface{} {
-	if o.Err != nil {
+func (o *GoHandler) RedisValue(reply interface{}) []interface{} {
+	if o.Error() {
 		return nil
 	}
+
+	var err error
 
 	switch reply := reply.(type) {
 	case []interface{}:
 		return reply
 	case nil:
-		o.Err = fmt.Errorf("redis nil returned")
-		return nil
+		err = fmt.Errorf("redis nil returned")
 	case redis.Error:
-		o.Err = reply
-		return nil
+		err = reply
 	}
 
-	if o.Err == nil {
-		o.Err = fmt.Errorf("redis: unexpected type for Values, got type %T", reply)
+	if err != nil {
+		o.Set(err)
+	} else {
+		o.Set(fmt.Errorf("redis: unexpected type for Values, got type %T", reply))
 	}
+	
 	return nil
 }
 
-func (o *ErrorHandler) RedisString(reply interface{}) string {
-	if o.Err != nil {
+func (o *GoHandler) RedisString(reply interface{}) string {
+	if o.Error() {
 		return ""
 	}
 
@@ -109,31 +124,30 @@ func (o *ErrorHandler) RedisString(reply interface{}) string {
 	case nil:
 		return ""
 	case redis.Error:
-		o.Err = reply
+		o.Set(reply)
 		return ""
 	}
 
-	if o.Err == nil {
-		o.Err = fmt.Errorf("redis: unexpected type for String, got type %T", reply)
+	if !o.Error() {
+		o.Set(fmt.Errorf("redis: unexpected type for String, got type %T", reply))
 	}
 	return ""
 }
 
-func (o *ErrorHandler) RedisMatchCount(conn redis.Conn, keyPattern string) int {
-	if o.Err != nil {
+func (o *GoHandler) RedisMatchCount(conn redis.Conn, keyPattern string) int {
+	if o.Error() {
 		return 0
 	}
 
 	key := "0"
 	count := 0
-	for true {
+	for !o.Error() {
 		ret := o.RedisValue(o.RedisDo(conn, _timeout, "SCAN", key, "MATCH", keyPattern, "COUNT", 1000))
-		if o.Err == nil {
-			if len(ret) != 2 {
-				o.Err = fmt.Errorf("unexpected redis scan return %v", ret)
-				return count
-			}
+		if len(ret) != 2 {
+			o.Set(fmt.Errorf("unexpected redis scan return %v", ret))
+			return count
 		}
+
 		key = o.RedisString(ret[0])
 		resultlist := o.RedisValue(ret[1])
 
@@ -147,22 +161,21 @@ func (o *ErrorHandler) RedisMatchCount(conn redis.Conn, keyPattern string) int {
 	return count
 }
 
-func (o *ErrorHandler) RedisMatchCountCond(conn redis.Conn, keyPattern string, cmp func(redis.Conn, string) bool) int {
-	if o.Err != nil {
+func (o *GoHandler) RedisMatchCountCond(conn redis.Conn, keyPattern string, cmp func(redis.Conn, string) bool) int {
+	if o.Error() {
 		return 0
 	}
 
 	key := "0"
 	count := 0
 
-	for true {
+	for !o.Error() {
 		ret := o.RedisValue(o.RedisDo(conn, _timeout, "SCAN", key, "MATCH", keyPattern, "COUNT", 1000))
-		if o.Err == nil {
-			if len(ret) != 2 {
-				o.Err = fmt.Errorf("unexpected redis scan return %v", ret)
-				return count
-			}
+		if len(ret) != 2 {
+			o.Set(fmt.Errorf("unexpected redis scan return %v", ret))
+			return count
 		}
+
 		key = o.RedisString(ret[0])
 		for _, line := range o.RedisValue(ret[1]) {
 			if cmp(conn, string(line.([]uint8))) {
@@ -178,26 +191,25 @@ func (o *ErrorHandler) RedisMatchCountCond(conn redis.Conn, keyPattern string, c
 	return count
 }
 
-func (o *ErrorHandler) RedisMatch(conn redis.Conn, keyPattern string) []string {
-	if o.Err != nil {
+func (o *GoHandler) RedisMatch(conn redis.Conn, keyPattern string) []string {
+	if o.Error() {
 		return []string{}
 	}
 
 	key := "0"
 	results := []string{}
 
-	for true {
+	for !o.Error() {
 		ret := o.RedisValue(o.RedisDo(conn, _timeout, "SCAN", key, "MATCH", keyPattern, "COUNT", 1000))
-		if o.Err != nil {
+		if o.Error() {
 			return results
 		}
 
-		if o.Err == nil {
-			if len(ret) != 2 {
-				o.Err = fmt.Errorf("unexpected redis scan return %v", ret)
-				return results
-			}
+		if len(ret) != 2 {
+			o.Err = fmt.Errorf("unexpected redis scan return %v", ret)
+			return results
 		}
+		
 		key = o.RedisString(ret[0])
 		for _, v := range o.RedisValue(ret[1]) {
 			results = append(results, o.RedisString(v))
